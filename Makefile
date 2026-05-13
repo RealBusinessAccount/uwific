@@ -11,8 +11,9 @@ SRCS    = $(SRCDIR)/main.c   \
           $(SRCDIR)/ui.c
 OBJS    = $(SRCS:.c=.o)
 TARGET  = calwifi
+INSTALL_DIR = /usr/local/bin
 
-.PHONY: all clean install
+.PHONY: all clean install uninstall
 
 all: $(TARGET)
 
@@ -23,7 +24,10 @@ $(SRCDIR)/%.o: $(SRCDIR)/%.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 install: $(TARGET)
-	install -Dm755 $(TARGET) $(DESTDIR)/usr/bin/$(TARGET)
+	install -Dm755 $(TARGET) $(INSTALL_DIR)/$(TARGET)
+
+uninstall:
+rm -f $(INSTALL_DIR)/$(TARGET)
 
 clean:
 	rm -f $(OBJS) $(TARGET)
