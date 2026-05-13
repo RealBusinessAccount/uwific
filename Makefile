@@ -27,7 +27,7 @@ install: $(TARGET)
 	install -Dm755 $(TARGET) $(INSTALL_DIR)/$(TARGET)
 
 uninstall:
-rm -f $(INSTALL_DIR)/$(TARGET)
+	rm -f $(INSTALL_DIR)/$(TARGET)
 
 clean:
 	rm -f $(OBJS) $(TARGET)
