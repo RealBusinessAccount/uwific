@@ -47,11 +47,12 @@
  */
 
 #define ROW_TITLE       0
-#define ROW_STATUS      1
-#define ROW_DIVIDER1    2
-#define ROW_NET_HEADER  3
-#define ROW_DIVIDER2    4
-#define ROW_LIST_START  5
+#define ROW_ADAPTER     1   /* adapter name + power state */
+#define ROW_STATUS      2   /* scan results / messages    */
+#define ROW_DIVIDER1    3
+#define ROW_NET_HEADER  4
+#define ROW_DIVIDER2    5
+#define ROW_LIST_START  6
 
 /* These are computed at runtime from LINES once ncurses is initialised. */
 static int g_row_keyhints  = 38;  /* first hint row  */
@@ -84,10 +85,11 @@ static int g_list_rows     = 33;
 static const char *SPINNER[] = { "-", "\\", "|", "/" };
 #define SPINNER_FRAMES (int)(sizeof(SPINNER)/sizeof(SPINNER[0]))
 
-/* ── module state ───────────────────────────────────────────────────────── */
+#define ADAPTER_NAME_DISPLAY 16  /* chars of adapter name shown in options */
 
-static UiState       g_state        = UI_STATE_LIST;
-static char          g_status[128]  = "Ready.";
+static UiState       g_state           = UI_STATE_LIST;
+static char          g_status[64]      = "Ready.";
+static char          g_adapter_status[64] = "";
 static WifiNetwork   g_networks[WIFI_MAX_NETWORKS];
 static int           g_net_count    = 0;
 static int           g_cursor       = 0;
@@ -181,6 +183,13 @@ void ui_set_networks(const WifiNetwork *networks, int count)
 {
     int old_count = g_net_count;
 
+    if (!networks || count <= 0) {
+        g_net_count   = 0;
+        g_cursor      = 0;
+        g_list_offset = 0;
+        return;
+    }
+
     g_net_count = (count > WIFI_MAX_NETWORKS) ? WIFI_MAX_NETWORKS : count;
     memcpy(g_networks, networks, g_net_count * sizeof(WifiNetwork));
 
@@ -194,6 +203,14 @@ void ui_set_networks(const WifiNetwork *networks, int count)
     /* Clamp cursor in case the new list is shorter. */
     if (g_cursor >= g_net_count)
         g_cursor = (g_net_count > 0) ? g_net_count - 1 : 0;
+}
+
+void ui_set_adapter_status(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(g_adapter_status, sizeof(g_adapter_status), fmt, ap);
+    va_end(ap);
 }
 
 void ui_set_status(const char *fmt, ...)
@@ -219,23 +236,31 @@ int ui_get_cursor(void)
 static void draw_title(void)
 {
     attron(COLOR_PAIR(CP_TITLE) | A_BOLD);
-    mvhline(ROW_TITLE, 0, ' ', UI_COLS);
-    mvprintw(ROW_TITLE, 2, "Calculinux WiFi Manager");
+    mvhline(ROW_TITLE, 0, ' ', COLS);
+    const char *title = "Calculinux WiFi Manager";
+    int title_col = (COLS - (int)strlen(title)) / 2;
+    if (title_col < 0) title_col = 0;
+    mvprintw(ROW_TITLE, title_col, "%s", title);
     attroff(COLOR_PAIR(CP_TITLE) | A_BOLD);
 }
 
 static void draw_status(void)
 {
-    attron(COLOR_PAIR(CP_STATUS));
-    mvhline(ROW_STATUS, 0, ' ', UI_COLS);
-    mvprintw(ROW_STATUS, 1, " Status: ");
+    /* Row 1: adapter name and power state */
+    attron(COLOR_PAIR(CP_STATUS) | A_BOLD);
+    mvhline(ROW_ADAPTER, 0, ' ', COLS);
+    mvprintw(ROW_ADAPTER, 1, "Adapter: %.*s", COLS - 11, g_adapter_status);
+    attroff(COLOR_PAIR(CP_STATUS) | A_BOLD);
 
+    /* Row 2: scan results / messages / spinner */
+    attron(COLOR_PAIR(CP_STATUS));
+    mvhline(ROW_STATUS, 0, ' ', COLS);
     if (g_state == UI_STATE_SCANNING) {
         static int frame = 0;
-        printw("%s Scanning...", SPINNER[frame % SPINNER_FRAMES]);
+        mvprintw(ROW_STATUS, 1, "%s Scanning...", SPINNER[frame % SPINNER_FRAMES]);
         frame++;
     } else {
-        printw("%.*s", UI_COLS - 11, g_status);
+        mvprintw(ROW_STATUS, 1, "%.*s", COLS - 2, g_status);
     }
     attroff(COLOR_PAIR(CP_STATUS));
 }
@@ -243,7 +268,7 @@ static void draw_status(void)
 static void draw_divider(int row)
 {
     attron(COLOR_PAIR(CP_BORDER));
-    mvhline(row, 0, ACS_HLINE, UI_COLS);
+    mvhline(row, 0, ACS_HLINE, COLS);
     attroff(COLOR_PAIR(CP_BORDER));
 }
 
@@ -254,11 +279,11 @@ static void draw_network_row(int screen_row, int net_idx, bool selected)
 
     /* Truncate SSID if necessary */
     if ((int)strlen(n->ssid) > SSID_DISPLAY_MAX) {
-        memcpy(ssid_display, n->ssid, SSID_DISPLAY_MAX - 1);
-        ssid_display[SSID_DISPLAY_MAX - 1] = '\xe2'; /* UTF-8 … = e2 80 a6 */
-        ssid_display[SSID_DISPLAY_MAX]     = '\x80';
-        ssid_display[SSID_DISPLAY_MAX + 1] = '\xa6';
-        ssid_display[SSID_DISPLAY_MAX + 2] = '\0';
+        memcpy(ssid_display, n->ssid, SSID_DISPLAY_MAX - 2);
+        ssid_display[SSID_DISPLAY_MAX - 2] = '.';
+        ssid_display[SSID_DISPLAY_MAX - 1] = '.';
+        ssid_display[SSID_DISPLAY_MAX]     = '.';
+        ssid_display[SSID_DISPLAY_MAX + 1] = '\0';
     } else {
         strncpy(ssid_display, n->ssid, sizeof(ssid_display) - 1);
         ssid_display[sizeof(ssid_display) - 1] = '\0';
@@ -270,7 +295,7 @@ static void draw_network_row(int screen_row, int net_idx, bool selected)
         attroff(A_BOLD);
 
     /* Clear the row */
-    mvhline(screen_row, 0, ' ', UI_COLS);
+    mvhline(screen_row, 0, ' ', COLS);
 
     /* Cursor indicator */
     mvprintw(screen_row, COL_CURSOR, selected ? ">" : " ");
@@ -340,11 +365,19 @@ static void draw_network_list(void)
 
 static void draw_keyhints(void)
 {
+    const char *line1 = "[Up/Dn/jk] Navigate  [Enter] Connect  [O] Options";
+    const char *line2 = "[D] Disconnect  [F] Forget  [R] Rescan  [Q] Quit";
+
+    int col1 = (COLS - (int)strlen(line1)) / 2;
+    int col2 = (COLS - (int)strlen(line2)) / 2;
+    if (col1 < 0) col1 = 0;
+    if (col2 < 0) col2 = 0;
+
     attron(A_DIM);
     mvhline(g_row_keyhints,  0, ' ', COLS);
     mvhline(g_row_keyhints2, 0, ' ', COLS);
-    mvprintw(g_row_keyhints,  1, "[Up/Dn/jk] Navigate  [Enter] Connect");
-    mvprintw(g_row_keyhints2, 1, "[D] Disconnect  [F] Forget  [R] Rescan  [Q] Quit");
+    mvprintw(g_row_keyhints,  col1, "%s", line1);
+    mvprintw(g_row_keyhints2, col2, "%s", line2);
     attroff(A_DIM);
 }
 
@@ -430,7 +463,7 @@ int ui_get_key(void)
 
 int ui_prompt_passphrase(const char *ssid, char *buf, int buf_len)
 {
-    int box_w   = UI_COLS - 4;
+    int box_w   = COLS - 4;
     int box_h   = 7;
     int box_y   = (LINES - box_h) / 2;
     int box_x   = 2;
@@ -452,7 +485,7 @@ int ui_prompt_passphrase(const char *ssid, char *buf, int buf_len)
     wattroff(overlay, A_BOLD);
 
     /* SSID (truncated to fit) */
-    char ssid_trunc[UI_COLS];
+    char ssid_trunc[128];
     snprintf(ssid_trunc, sizeof(ssid_trunc), "%-*.*s",
              box_w - 4, box_w - 4, ssid);
     mvwprintw(overlay, 2, 2, "%s", ssid_trunc);
@@ -515,6 +548,131 @@ int ui_prompt_passphrase(const char *ssid, char *buf, int buf_len)
     explicit_bzero(input, sizeof(input));
 
     return 0;
+}
+
+/* ── options overlay ────────────────────────────────────────────────────── */
+
+bool ui_show_options(void)
+{
+    int adapter_count;
+    const WifiAdapter *adapters = wifi_get_adapters(&adapter_count);
+
+    int box_w = COLS - 4;
+    int box_h = adapter_count + 6; /* 2 border + 1 title + 1 divider + count + 1 hints */
+    if (box_h > LINES - 2) box_h = LINES - 2;
+    int box_y = (LINES - box_h) / 2;
+    int box_x = 2;
+    int list_start = 3; /* row inside window where adapter list begins */
+    int visible = box_h - 5;
+    if (visible < 1) visible = 1;
+
+    WINDOW *win = newwin(box_h, box_w, box_y, box_x);
+    if (!win) return false;
+    keypad(win, TRUE);
+
+    int cursor    = 0;
+    bool changed  = false;
+
+    /* find current active adapter as initial cursor position */
+    for (int i = 0; i < adapter_count; i++)
+        if (adapters[i].active) { cursor = i; break; }
+
+    for (;;) {
+        werase(win);
+        box(win, 0, 0);
+
+        /* Title */
+        wattron(win, A_BOLD);
+        mvwprintw(win, 1, 2, "Options - Adapters");
+        wattroff(win, A_BOLD);
+
+        mvwhline(win, 2, 1, ACS_HLINE, box_w - 2);
+
+        /* Adapter list */
+        for (int i = 0; i < adapter_count && i < visible; i++) {
+            const WifiAdapter *a = &adapters[i];
+            bool sel = (i == cursor);
+
+            if (sel) wattron(win, A_REVERSE | A_BOLD);
+            mvwprintw(win, list_start + i, 1, " %-*.*s - %-*.*s  %-5s  %s",
+                      10, 10, a->name,
+                      10, 10, a->ifname,
+                      a->powered ? "[on]" : "[off]",
+                      a->active  ? "[active]" : "");
+            if (sel) wattroff(win, A_REVERSE | A_BOLD);
+        }
+
+        /* Hints */
+        mvwhline(win, box_h - 2, 1, ACS_HLINE, box_w - 2);
+        wattron(win, A_DIM);
+        mvwprintw(win, box_h - 1, 1, "[Enter] Select  [P] Power  [Esc] Close");
+        wattroff(win, A_DIM);
+
+        wrefresh(win);
+
+        int key = wgetch(win);
+        switch (key) {
+        case KEY_UP:
+        case 'k':
+            if (cursor > 0) cursor--;
+            break;
+
+        case KEY_DOWN:
+        case 'j':
+            if (cursor < adapter_count - 1) cursor++;
+            break;
+
+        case 'p':
+        case 'P': {
+            bool new_powered = !adapters[cursor].powered;
+            if (wifi_set_adapter_powered(cursor, new_powered) == 0) {
+                /* iwd reorganises its object tree when power state changes,
+                 * briefly disconnecting from the bus. Wait for it to settle
+                 * before reloading. If reload fails, the powered flag was
+                 * already updated in the cache by wifi_set_adapter_powered,
+                 * so the UI still reflects the correct state. */
+                napms(750);
+                wifi_reload_adapters(); /* ignore rc — stale cache is fine */
+                adapters = wifi_get_adapters(&adapter_count);
+                if (cursor >= adapter_count) cursor = adapter_count - 1;
+                if (!new_powered && adapters[cursor].active)
+                    changed = true;
+            }
+            break;
+        }
+
+        case '\n':
+        case KEY_ENTER:
+            if (!adapters[cursor].powered) {
+                /* Flash a brief message inside the overlay */
+                mvwprintw(win, box_h - 1, 1, "%-*s",
+                          box_w - 2, "Adapter is powered off.");
+                wrefresh(win);
+                napms(1200);
+                break;
+            }
+            if (!adapters[cursor].active) {
+                wifi_set_active_adapter(cursor);
+                wifi_reload_adapters();
+                adapters = wifi_get_adapters(&adapter_count);
+                changed = true;
+            }
+            /* fall through to close */
+            goto done;
+
+        case 27: /* Esc */
+            goto done;
+
+        default:
+            break;
+        }
+    }
+
+done:
+    delwin(win);
+    clear();
+    ui_draw();
+    return changed;
 }
 
 /* ── confirm dialog ─────────────────────────────────────────────────────── */

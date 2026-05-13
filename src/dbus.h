@@ -50,4 +50,24 @@ int dbus_get_property_string(const char *dest,
                               const char *property,
                               char **value_out);
 
+/*
+ * Read a boolean property from a D-Bus interface.
+ */
+int dbus_get_property_bool(const char *dest,
+                            const char *path,
+                            const char *iface,
+                            const char *property,
+                            bool       *value_out);
+
+/*
+ * Set a boolean property on a D-Bus interface.
+ * Uses org.freedesktop.DBus.Properties.Set internally.
+ * Returns 0 on success, <0 on error.
+ */
+int dbus_set_property_bool(const char *dest,
+                            const char *path,
+                            const char *iface,
+                            const char *property,
+                            bool        value);
+
 #endif /* DBUS_H */

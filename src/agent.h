@@ -19,7 +19,7 @@
  * bus name; iwd is told about it via AgentManager.RegisterAgent().
  */
 
-#define AGENT_PATH "/net/connman/calwifi/Agent"
+#define AGENT_PATH "/net/connman/uwifi/Agent"
 
 /*
  * Register the agent object on the bus and tell iwd about it.

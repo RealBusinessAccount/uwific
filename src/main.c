@@ -9,14 +9,14 @@
 #include "ui.h"
 
 /*
- * main.c — entry point and event loop
+ * main.c - entry point and event loop
  *
  * Startup order:
- *   1. dbus_init()          — open the system bus
- *   2. wifi_init()          — locate the iwd station object
- *   3. ui_init()            — set up ncurses
- *   4. agent_set_passphrase_callback() — wire agent → ui
- *   5. agent_init()         — register agent with iwd
+ *   1. dbus_init()          - open the system bus
+ *   2. wifi_init()          - locate the iwd station object
+ *   3. ui_init()            - set up ncurses
+ *   4. agent_set_passphrase_callback() - wire agent → ui
+ *   5. agent_init()         - register agent with iwd
  *   6. Initial scan + draw
  *   7. Event loop
  *
@@ -33,6 +33,23 @@ static void do_cleanup(void) {
 
 static void do_scan(void) {
     int count;
+    char adapter_info[32];
+    wifi_active_adapter_info(adapter_info, sizeof(adapter_info));
+    ui_set_adapter_status("%s", adapter_info);
+
+    /* If the active adapter is powered off, clear the network list
+     * and show a helpful status rather than attempting a scan. */
+    int adapter_count;
+    const WifiAdapter *adapters = wifi_get_adapters(&adapter_count);
+    for (int i = 0; i < adapter_count; i++) {
+        if (adapters[i].active && !adapters[i].powered) {
+            ui_set_networks(NULL, 0);
+            ui_set_state(UI_STATE_LIST);
+            ui_set_status("Adapter off. Use [O] Options to power on.");
+            ui_draw();
+            return;
+        }
+    }
 
     ui_set_state(UI_STATE_SCANNING);
     ui_set_status("Scanning...");
@@ -69,7 +86,7 @@ static void do_connect(void) {
         ui_show_message("Connected successfully.", /*is_error=*/0, 1500);
         do_scan(); /* refresh list to show connected state */
     } else if (rc == -ECANCELED) {
-        /* user aborted passphrase prompt — just go back to list */
+        /* user aborted passphrase prompt - just go back to list */
         ui_set_state(UI_STATE_LIST);
         ui_draw();
     } else {
@@ -81,17 +98,17 @@ int main(void) {
     atexit(do_cleanup);
 
     if (dbus_init() < 0) {
-        fprintf(stderr, "calwifi: could not connect to system bus\n");
+        fprintf(stderr, "uwific: could not connect to system bus\n");
         return EXIT_FAILURE;
     }
 
     if (wifi_init() < 0) {
-        fprintf(stderr, "calwifi: could not find a WiFi adapter via iwd\n");
+        fprintf(stderr, "uwific: no WiFi adapters found via iwd\n");
         return EXIT_FAILURE;
     }
 
     if (ui_init() < 0) {
-        fprintf(stderr, "calwifi: terminal too small (need %dx%d)\n",
+        fprintf(stderr, "uwific: terminal too small (need %dx%d)\n",
                 UI_COLS, UI_ROWS);
         return EXIT_FAILURE;
     }
@@ -114,6 +131,12 @@ int main(void) {
         case 'q':
         case 'Q':
             return EXIT_SUCCESS;
+
+        case 'o':
+        case 'O':
+            ui_show_options();
+            do_scan();
+            break;
 
         case 'f':
         case 'F': {

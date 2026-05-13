@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 #include <systemd/sd-bus.h>
 
 #include "dbus.h"
@@ -109,5 +110,59 @@ int dbus_get_property_string(const char *dest,
 
     sd_bus_error_free(&error);
     *value_out = value;   /* caller must free() */
+    return 0;
+}
+
+/* ── boolean property get/set ───────────────────────────────────────────── */
+
+int dbus_get_property_bool(const char *dest,
+                            const char *path,
+                            const char *iface,
+                            const char *property,
+                            bool       *value_out)
+{
+    sd_bus_error error = SD_BUS_ERROR_NULL;
+    int          val   = 0;
+    int          rc;
+
+    rc = sd_bus_get_property_trivial(g_bus,
+                                     dest, path, iface, property,
+                                     &error, 'b', &val);
+    if (rc < 0) {
+        fprintf(stderr,
+                "dbus_get_property_bool: %s.%s on %s failed: %s\n",
+                iface, property, path,
+                error.message ? error.message : strerror(-rc));
+        sd_bus_error_free(&error);
+        return rc;
+    }
+
+    sd_bus_error_free(&error);
+    *value_out = (bool)val;
+    return 0;
+}
+
+int dbus_set_property_bool(const char *dest,
+                            const char *path,
+                            const char *iface,
+                            const char *property,
+                            bool        value)
+{
+    sd_bus_error error = SD_BUS_ERROR_NULL;
+    int          rc;
+
+    rc = sd_bus_set_property(g_bus,
+                             dest, path, iface, property,
+                             &error, "b", (int)value);
+    if (rc < 0) {
+        fprintf(stderr,
+                "dbus_set_property_bool: %s.%s on %s failed: %s\n",
+                iface, property, path,
+                error.message ? error.message : strerror(-rc));
+        sd_bus_error_free(&error);
+        return rc;
+    }
+
+    sd_bus_error_free(&error);
     return 0;
 }

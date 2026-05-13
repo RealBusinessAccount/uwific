@@ -15,116 +15,219 @@
  * iwd object hierarchy we care about:
  *
  *   /net/connman/iwd                        (ObjectManager)
- *     └─ /net/connman/iwd/0                 (Adapter)
- *          └─ /net/connman/iwd/0/3          (Device — net.connman.iwd.Device)
+ *     └─ /net/connman/iwd/0                 (Adapter — net.connman.iwd.Adapter)
+ *          └─ /net/connman/iwd/0/4          (Device — net.connman.iwd.Device)
  *               ├─ net.connman.iwd.Station  (scan, list, connect, disconnect)
- *               └─ /net/connman/iwd/0/3/nnn (Network objects)
+ *               └─ /net/connman/iwd/0/4/nnn (Network objects)
  *                    └─ net.connman.iwd.Network  (Name, Type, KnownNetwork)
  *
- * We discover the station path once at init time by walking GetManagedObjects.
- * Network objects are enumerated on each scan via GetOrderedNetworks(), which
- * returns (object_path, signal_strength) pairs in descending RSSI order.
+ * We enumerate all adapters and stations once at init time by walking
+ * GetManagedObjects. The first station found becomes the active one.
+ * Network objects are enumerated on each scan via GetOrderedNetworks().
  */
 
 #define IWD_SERVICE          "net.connman.iwd"
 #define IWD_ROOT_PATH        "/"
 #define IWD_OBJECT_MANAGER   "org.freedesktop.DBus.ObjectManager"
+#define IWD_ADAPTER_IFACE    "net.connman.iwd.Adapter"
 #define IWD_STATION_IFACE    "net.connman.iwd.Station"
 #define IWD_NETWORK_IFACE    "net.connman.iwd.Network"
 #define IWD_DEVICE_IFACE     "net.connman.iwd.Device"
 
-static char         g_station_path[WIFI_PATH_MAX] = {0};
-static WifiNetwork  g_networks[WIFI_MAX_NETWORKS];
-static int          g_network_count = 0;
+static char        g_station_path[WIFI_PATH_MAX] = {0};
+static WifiNetwork g_networks[WIFI_MAX_NETWORKS];
+static int         g_network_count = 0;
 
-/* ── init / cleanup ─────────────────────────────────────────────────────── */
+static WifiAdapter g_adapters[WIFI_MAX_ADAPTERS];
+static int         g_adapter_count = 0;
+
+/* ── enumerate helpers ──────────────────────────────────────────────────── */
 
 /*
- * Walk iwd's GetManagedObjects response to find the first object that
- * exposes net.connman.iwd.Station, and store its path in g_station_path.
- *
- * The reply structure is:
- *   a{oa{sa{sv}}}
- *   array of:
- *     object_path ->
- *       array of:
- *         interface_name ->
- *           array of property_name -> variant
- *
- * We use sd_bus_message_skip to blast past the property dicts we don't
- * care about, and keep strict enter/exit symmetry so the parse position
- * never drifts between iterations.
+ * Wrapper around dbus_call_method that suppresses error output.
+ * Used during adapter reload where a transient bus disconnect is expected.
  */
-static int find_station_path(void)
+static int dbus_call_method_silent(const char      *dest,
+                                    const char      *path,
+                                    const char      *iface,
+                                    const char      *method,
+                                    sd_bus_message **reply_out)
+{
+    sd_bus_error    error = SD_BUS_ERROR_NULL;
+    sd_bus_message *reply = NULL;
+    int rc;
+
+    rc = sd_bus_call_method(dbus_get_bus(), dest, path, iface, method,
+                            &error, &reply, NULL);
+    sd_bus_error_free(&error);
+    if (rc < 0) return rc;
+
+    if (reply_out) *reply_out = reply;
+    else sd_bus_message_unref(reply);
+    return 0;
+}
+
+/*
+ * Walk GetManagedObjects and build g_adapters[].
+ *
+ * For each object we record whether it exposes net.connman.iwd.Adapter
+ * and/or net.connman.iwd.Station, then do a second pass to pair them up:
+ * a Station lives under its Adapter in the object path hierarchy, so
+ * /net/connman/iwd/0/4 is the station for adapter /net/connman/iwd/0.
+ *
+ * After enumeration we read the Powered and Name properties for each
+ * adapter and set g_station_path to the first powered (or any) station.
+ */
+
+#define MAX_OBJECTS 64
+
+typedef struct {
+    char path[WIFI_PATH_MAX];
+    bool has_adapter;
+    bool has_station;
+} ObjectEntry;
+
+static int enumerate_adapters(void)
 {
     sd_bus_message *reply = NULL;
     int rc;
 
-    rc = dbus_call_method(IWD_SERVICE,
-                          IWD_ROOT_PATH,
-                          IWD_OBJECT_MANAGER,
-                          "GetManagedObjects",
-                          &reply);
+    rc = dbus_call_method_silent(IWD_SERVICE, IWD_ROOT_PATH,
+                                  IWD_OBJECT_MANAGER, "GetManagedObjects", &reply);
     if (rc < 0)
         return rc;
 
-    /* Enter outer array of dict entries: a{oa{sa{sv}}} */
+    ObjectEntry objects[MAX_OBJECTS];
+    int         obj_count = 0;
+
     rc = sd_bus_message_enter_container(reply, 'a', "{oa{sa{sv}}}");
     if (rc < 0) goto out;
 
     while ((rc = sd_bus_message_enter_container(reply, 'e', "oa{sa{sv}}")) > 0) {
         const char *obj_path = NULL;
-        bool found_station = false;
+        bool has_adapter = false, has_station = false;
 
         rc = sd_bus_message_read(reply, "o", &obj_path);
         if (rc < 0) goto out;
 
-        /* Enter the interface dict: a{sa{sv}} */
         rc = sd_bus_message_enter_container(reply, 'a', "{sa{sv}}");
         if (rc < 0) goto out;
 
         while ((rc = sd_bus_message_enter_container(reply, 'e', "sa{sv}")) > 0) {
             const char *iface = NULL;
-
             rc = sd_bus_message_read(reply, "s", &iface);
             if (rc < 0) goto out;
 
-            if (strcmp(iface, IWD_STATION_IFACE) == 0)
-                found_station = true;
+            if (strcmp(iface, IWD_ADAPTER_IFACE) == 0) has_adapter = true;
+            if (strcmp(iface, IWD_STATION_IFACE)  == 0) has_station = true;
 
-            /* Skip property dict regardless of whether we matched */
             rc = sd_bus_message_skip(reply, "a{sv}");
             if (rc < 0) goto out;
-
-            rc = sd_bus_message_exit_container(reply); /* exit {sa{sv}} */
+            rc = sd_bus_message_exit_container(reply);
             if (rc < 0) goto out;
         }
         if (rc < 0) goto out;
 
         rc = sd_bus_message_exit_container(reply); /* exit a{sa{sv}} */
         if (rc < 0) goto out;
-
         rc = sd_bus_message_exit_container(reply); /* exit {oa{sa{sv}}} */
         if (rc < 0) goto out;
 
-        if (found_station) {
-            strncpy(g_station_path, obj_path, WIFI_PATH_MAX - 1);
-            g_station_path[WIFI_PATH_MAX - 1] = '\0';
-            break;
+        if ((has_adapter || has_station) && obj_count < MAX_OBJECTS) {
+            strncpy(objects[obj_count].path, obj_path, WIFI_PATH_MAX - 1);
+            objects[obj_count].has_adapter = has_adapter;
+            objects[obj_count].has_station = has_station;
+            obj_count++;
         }
     }
     if (rc < 0) goto out;
 
-    /* If we broke early after finding the station, the message cursor is
-     * still inside the object loop — sd-bus will refuse to exit the outer
-     * array with EBUSY. That's fine; we're done with the message either way. */
-    sd_bus_message_exit_container(reply); /* exit outer array, ignore rc */
+    /* ignore rc from outer array exit — may be EBUSY if we broke early */
+    sd_bus_message_exit_container(reply);
 
-    if (g_station_path[0] == '\0') {
-        fprintf(stderr, "wifi_init: no iwd Station object found\n");
+    /* ── pair adapters with their stations ── */
+    g_adapter_count = 0;
+    for (int i = 0; i < obj_count && g_adapter_count < WIFI_MAX_ADAPTERS; i++) {
+        if (!objects[i].has_adapter)
+            continue;
+
+        WifiAdapter *a = &g_adapters[g_adapter_count];
+        memset(a, 0, sizeof(*a));
+        strncpy(a->object_path, objects[i].path, WIFI_PATH_MAX - 1);
+
+        /* Find the station whose path starts with this adapter's path */
+        for (int j = 0; j < obj_count; j++) {
+            if (!objects[j].has_station)
+                continue;
+            if (strncmp(objects[j].path, a->object_path,
+                        strlen(a->object_path)) == 0) {
+                strncpy(a->station_path, objects[j].path, WIFI_PATH_MAX - 1);
+                break;
+            }
+        }
+
+        /* Read Powered and Name (phy name) from the Adapter object */
+        bool powered = false;
+        if (dbus_get_property_bool(IWD_SERVICE, a->object_path,
+                                   IWD_ADAPTER_IFACE, "Powered",
+                                   &powered) == 0)
+            a->powered = powered;
+
+        char *name = NULL;
+        if (dbus_get_property_string(IWD_SERVICE, a->object_path,
+                                     IWD_ADAPTER_IFACE, "Name",
+                                     &name) == 0 && name) {
+            strncpy(a->name, name, WIFI_ADAPTER_NAME_MAX - 1);
+            free(name);
+        } else {
+            const char *slash = strrchr(a->object_path, '/');
+            strncpy(a->name, slash ? slash + 1 : a->object_path,
+                    WIFI_ADAPTER_NAME_MAX - 1);
+        }
+
+        /* Read interface name (e.g. "wlan0") from the Device object,
+         * which lives at the same path as the station. Best-effort. */
+        if (a->station_path[0] != '\0') {
+            char *ifname = NULL;
+            if (dbus_get_property_string(IWD_SERVICE, a->station_path,
+                                         IWD_DEVICE_IFACE, "Name",
+                                         &ifname) == 0 && ifname) {
+                strncpy(a->ifname, ifname, WIFI_ADAPTER_NAME_MAX - 1);
+                free(ifname);
+            }
+        }
+        /* Fall back to phy name if interface name unavailable */
+        if (a->ifname[0] == '\0')
+            strncpy(a->ifname, a->name, WIFI_ADAPTER_NAME_MAX - 1);
+
+        g_adapter_count++;
+    }
+
+    if (g_adapter_count == 0) {
+        fprintf(stderr, "wifi_init: no iwd Adapter objects found\n");
         rc = -ENODEV;
-    } else {
-        rc = 0;
+        goto out;
+    }
+
+    /* Try to find a station to make active. If none exists (all adapters
+     * powered off), that's fine — the UI will show the powered-off state
+     * and the user can power one on from the options menu. */
+    rc = 0;
+    for (int i = 0; i < g_adapter_count; i++) {
+        if (g_adapters[i].station_path[0] != '\0') {
+            g_adapters[i].active = true;
+            strncpy(g_station_path, g_adapters[i].station_path,
+                    WIFI_PATH_MAX - 1);
+            break;
+        }
+    }
+    /* Mark first adapter active for UI purposes even if it has no station */
+    if (g_adapter_count > 0) {
+        bool any_active = false;
+        for (int i = 0; i < g_adapter_count; i++)
+            if (g_adapters[i].active) { any_active = true; break; }
+        if (!any_active)
+            g_adapters[0].active = true;
     }
 
 out:
@@ -134,13 +237,14 @@ out:
 
 int wifi_init(void)
 {
-    return find_station_path();
+    return enumerate_adapters();
 }
 
 void wifi_cleanup(void)
 {
     g_station_path[0] = '\0';
     g_network_count   = 0;
+    g_adapter_count   = 0;
 }
 
 /* ── signal strength ────────────────────────────────────────────────────── */
@@ -442,4 +546,81 @@ int wifi_disconnect(void)
                             IWD_STATION_IFACE,
                             "Disconnect",
                             NULL);
+}
+
+/* ── adapter functions ──────────────────────────────────────────────────── */
+
+void wifi_active_adapter_info(char *buf, int buf_len)
+{
+    for (int i = 0; i < g_adapter_count; i++) {
+        if (g_adapters[i].active) {
+            snprintf(buf, buf_len, "%s on %s - [%s]",
+                     g_adapters[i].ifname,
+                     g_adapters[i].name,
+                     g_adapters[i].powered ? "on" : "off");
+            return;
+        }
+    }
+    snprintf(buf, buf_len, "no adapter");
+}
+
+
+const WifiAdapter *wifi_get_adapters(int *count_out)
+{
+    *count_out = g_adapter_count;
+    return g_adapters;
+}
+
+int wifi_reload_adapters(void)
+{
+    /* Stash the current cache so we can restore it if enumeration fails.
+     * This matters when iwd briefly disconnects after a power toggle —
+     * a failed reload should leave the UI with the last-known state rather
+     * than an empty adapter list. */
+    WifiAdapter saved[WIFI_MAX_ADAPTERS];
+    int         saved_count = g_adapter_count;
+    memcpy(saved, g_adapters, sizeof(WifiAdapter) * g_adapter_count);
+
+    g_adapter_count = 0;
+    g_network_count = 0;
+
+    int rc = enumerate_adapters();
+    if (rc < 0) {
+        /* Restore the stale cache */
+        memcpy(g_adapters, saved, sizeof(WifiAdapter) * saved_count);
+        g_adapter_count = saved_count;
+    }
+    return rc;
+}
+
+int wifi_set_active_adapter(int index)
+{
+    if (index < 0 || index >= g_adapter_count)
+        return -EINVAL;
+
+    if (g_adapters[index].station_path[0] == '\0')
+        return -ENODEV;
+
+    for (int i = 0; i < g_adapter_count; i++)
+        g_adapters[i].active = (i == index);
+
+    strncpy(g_station_path, g_adapters[index].station_path, WIFI_PATH_MAX - 1);
+    g_network_count = 0;
+    return 0;
+}
+
+int wifi_set_adapter_powered(int index, bool powered)
+{
+    if (index < 0 || index >= g_adapter_count)
+        return -EINVAL;
+
+    int rc = dbus_set_property_bool(IWD_SERVICE,
+                                    g_adapters[index].object_path,
+                                    IWD_ADAPTER_IFACE,
+                                    "Powered",
+                                    powered);
+    if (rc == 0)
+        g_adapters[index].powered = powered;
+
+    return rc;
 }

@@ -1,9 +1,11 @@
-# calwifi
+# uwific - Micro WiFi Client
 
-A TUI WiFi manager for [Calculinux](https://calculinux.org), designed for
-small-screen Linux devices like the Clockwork PicoCalc. Talks directly to
+A TUI WiFi manager designed for small-screen Linux devices. Talks directly to
 [iwd](https://iwd.wiki.kernel.org/) via D-Bus, so it behaves as a proper
 iwd client and benefits from iwd's built-in credential persistence.
+Designed specifically for [Calculinux](https://calculinux.org) running on modified PicoCalc devices,
+but should work just as well on any device with a TTY that uses iwd to manage
+wireless connections.
 
 ## Features
 
@@ -13,7 +15,8 @@ iwd client and benefits from iwd's built-in credential persistence.
 - Forgets known networks (removes stored credentials from iwd)
 - Adapts to whatever terminal size is available
 - Credentials are persisted by iwd automatically — known networks reconnect
-  on subsequent boots without needing to run calwifi at all
+  on subsequent boots without needing to run uwific at all
+- Support for confiugration of multiple adapters and interfaces.
 
 ## Requirements
 
@@ -34,19 +37,25 @@ opkg install systemd-dev libncurses-dev
 make
 ```
 
-To install to `/usr/bin`:
+To install to `/usr/local/bin`:
 
 ```
 sudo make install
 ```
 
+To uninstall:
+
+```
+sudo make uninstall
+````
+
 ## Usage
 
 ```
-sudo calwifi
+sudo uwific
 ```
 
-> **Note:** calwifi communicates with iwd over the system D-Bus, which
+> **Note:** uwific communicates with iwd over the system D-Bus, which
 > requires root privileges.
 
 ## Controls
@@ -59,6 +68,8 @@ sudo calwifi
 | D          | Disconnect from current network             |
 | F          | Forget selected network (Y/N confirmation)  |
 | R          | Rescan for networks                         |
+| O          | Open adapter options menu                   |
+| P          | Toggle adapter power (in options menu)      |
 | Q          | Quit                                        |
 
 ## Network list indicators

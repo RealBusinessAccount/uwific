@@ -45,7 +45,10 @@ void ui_cleanup(void);
  * the list length changed. */
 void ui_set_networks(const WifiNetwork *networks, int count);
 
-/* Update the status line text (e.g. "Scanning…", "Connected"). */
+/* Update the adapter status line (top row: name + power state). */
+void ui_set_adapter_status(const char *fmt, ...);
+
+/* Update the status line text (e.g. "Scanning...", "Connected"). */
 void ui_set_status(const char *fmt, ...);
 
 /* Switch to a given UI state and redraw. */
@@ -75,6 +78,15 @@ int ui_get_cursor(void);
  * so agent.c can call it directly.
  */
 int ui_prompt_passphrase(const char *ssid, char *buf, int buf_len);
+
+/* Show the options overlay (adapter list, power toggle, adapter select).
+ * Returns true if the active adapter was changed (caller should rescan). */
+bool ui_show_options(void);
+
+/* Show the options overlay (adapter list, power toggle, adapter selection).
+ * Draws on top of the current network list; handles its own input loop.
+ * Returns true if the active adapter changed (caller should rescan). */
+bool ui_show_options(void);
 
 /* Show a Y/N confirmation dialog with the given prompt.
  * Returns true if the user pressed Y, false for N or Esc. */
